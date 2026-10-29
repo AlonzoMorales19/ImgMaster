@@ -34,6 +34,123 @@ $cwdImages = @(Get-ChildItem -LiteralPath $script:WorkDir -File -ErrorAction Sil
 if ($cwdImages.Count -eq 0 -and [IO.Directory]::Exists($script:BatDir)) {
     $script:WorkDir = $script:BatDir
 }
+# La carpeta inicial conserva el comportamiento original. La seleccion externa
+# es opcional y solo permanece activa durante esta ejecucion.
+$script:InitialWorkDir = $script:WorkDir
+$script:ExternalFolderSelected = $false
+function Get-ResultsRoot {
+    if ($script:ExternalFolderSelected) { return $script:BatDir }
+    return $script:WorkDir
+}
+# Selector moderno de carpetas de Windows (IFileOpenDialog + FOS_PICKFOLDERS).
+# Se carga solo cuando el usuario elige la opcion 11.
+function Select-ImagesFolder {
+    try {
+        if (-not ('ImgMasterModernFolderPicker' -as [type])) {
+            Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+[ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMFolderDialog {
+    [PreserveSig] int Show(IntPtr owner);
+    void SetFileTypes(uint count, IntPtr filters);
+    void SetFileTypeIndex(uint index);
+    void GetFileTypeIndex(out uint index);
+    void Advise(IntPtr events, out uint cookie);
+    void Unadvise(uint cookie);
+    void SetOptions(uint options);
+    void GetOptions(out uint options);
+    void SetDefaultFolder(IMShellItem folder);
+    void SetFolder(IMShellItem folder);
+    void GetFolder(out IMShellItem folder);
+    void GetCurrentSelection(out IMShellItem item);
+    void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name);
+    void GetFileName(out IntPtr name);
+    void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+    void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string text);
+    void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string label);
+    void GetResult(out IMShellItem item);
+    void AddPlace(IMShellItem item, int location);
+    void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string extension);
+    void Close(int error);
+    void SetClientGuid(ref Guid guid);
+    void ClearClientData();
+    void SetFilter(IntPtr filter);
+    void GetResults(out IntPtr items);
+    void GetSelectedItems(out IntPtr items);
+}
+[ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMShellItem {
+    void BindToHandler(IntPtr bindContext, ref Guid bhid, ref Guid riid, out IntPtr result);
+    void GetParent(out IMShellItem parent);
+    void GetDisplayName(uint displayNameType, out IntPtr name);
+    void GetAttributes(uint mask, out uint attributes);
+    void Compare(IMShellItem other, uint hint, out int order);
+}
+public static class ImgMasterModernFolderPicker {
+    [DllImport("shell32.dll", CharSet=CharSet.Unicode, PreserveSig=true)]
+    private static extern int SHCreateItemFromParsingName(
+        [MarshalAs(UnmanagedType.LPWStr)] string path, IntPtr bindContext,
+        ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IMShellItem item);
+
+    public static string Pick(string initialPath) {
+        object instance = Activator.CreateInstance(Type.GetTypeFromCLSID(
+            new Guid("dc1c5a9c-e88a-4dde-a5a1-60f82a20aef7")));
+        IMFolderDialog dialog = (IMFolderDialog)instance;
+        IMShellItem initial = null;
+        IMShellItem selected = null;
+        try {
+            uint options;
+            dialog.GetOptions(out options);
+            dialog.SetOptions(options | 0x20u | 0x800u); // PICKFOLDERS + FORCEFILESYSTEM
+            dialog.SetTitle("Seleccionar carpeta de imagenes");
+            dialog.SetOkButtonLabel("Seleccionar carpeta");
+            if (!String.IsNullOrEmpty(initialPath) && System.IO.Directory.Exists(initialPath)) {
+                Guid iid = new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe");
+                if (SHCreateItemFromParsingName(initialPath, IntPtr.Zero, ref iid, out initial) == 0)
+                    dialog.SetFolder(initial);
+            }
+            int hr = dialog.Show(IntPtr.Zero);
+            if (hr == unchecked((int)0x800704C7)) return null; // cancelado
+            if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+            dialog.GetResult(out selected);
+            IntPtr pointer;
+            selected.GetDisplayName(0x80058000u, out pointer); // SIGDN_FILESYSPATH
+            try { return Marshal.PtrToStringUni(pointer); }
+            finally { Marshal.FreeCoTaskMem(pointer); }
+        } finally {
+            if (selected != null) Marshal.ReleaseComObject(selected);
+            if (initial != null) Marshal.ReleaseComObject(initial);
+            Marshal.ReleaseComObject(instance);
+        }
+    }
+}
+'@
+        }
+        $selected = [ImgMasterModernFolderPicker]::Pick($script:WorkDir)
+        if ([string]::IsNullOrWhiteSpace($selected)) { return }
+        $selected = [IO.Path]::GetFullPath($selected)
+        if (-not [IO.Directory]::Exists($selected)) {
+            throw 'La carpeta seleccionada ya no existe.'
+        }
+        $folderInfo = [IO.DirectoryInfo]::new($selected)
+        if (($folderInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Por seguridad, selecciona una carpeta normal y no un enlace.'
+        }
+        $enumerator = [IO.Directory]::EnumerateFileSystemEntries($selected).GetEnumerator()
+        try { [void]$enumerator.MoveNext() } finally { $enumerator.Dispose() }
+        $script:WorkDir = $selected
+        $script:ExternalFolderSelected = $true
+    } catch {
+        Write-Host ('ERROR al seleccionar carpeta: '+$_.Exception.Message) -ForegroundColor Red
+        Wait-User
+    }
+}
+function Restore-InitialFolder {
+    $script:WorkDir = $script:InitialWorkDir
+    $script:ExternalFolderSelected = $false
+}
 $script:Extensions = @('.jpg','.jpeg','.png','.webp','.bmp','.gif','.tif','.tiff',
     '.heic','.heif','.avif','.jfif','.ico','.svg','.dds','.tga')
 $script:TargetFormats = @('png','jpg','webp','avif','bmp')
@@ -169,27 +286,28 @@ function Get-OutputDir([string]$format,$quality) {
     if ($script:TargetFormats -notcontains $format) {
         throw ('Formato de salida no admitido: '+$format)
     }
+    $root = Get-ResultsRoot
     $leaf = Split-Path -Path $script:WorkDir -Leaf
     if ([string]::IsNullOrWhiteSpace($leaf)) { $leaf='Imagenes' }
     $used = [System.Collections.Generic.HashSet[string]]::new(
         [StringComparer]::OrdinalIgnoreCase)
-    foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($script:WorkDir)) {
+    foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($root)) {
         [void]$used.Add([IO.Path]::GetFileName($path))
     }
     # Mantener el nombre historico para formatos sin selector de calidad.
     # Para formatos con calidad, el nombre siempre identifica la configuracion.
     if ($null -eq $quality -and -not $used.Contains($leaf)) {
-        return (Join-Path $script:WorkDir $leaf)
+        return (Join-Path $root $leaf)
     }
     $baseName = $leaf + ' - ' + $format.ToUpperInvariant()
     if ($null -ne $quality) { $baseName += ' - CALIDAD ' + [string]$quality + '%' }
     if (-not $used.Contains($baseName)) {
-        return (Join-Path $script:WorkDir $baseName)
+        return (Join-Path $root $baseName)
     }
     for ($i=2; $i -le 1000000; $i++) {
         $name = $baseName + ' (' + $i + ')'
         if (-not $used.Contains($name)) {
-            return (Join-Path $script:WorkDir $name)
+            return (Join-Path $root $name)
         }
     }
     throw 'No se encontro un nombre libre para la carpeta de salida.'
@@ -229,7 +347,8 @@ function Make-Convert-Plan($files,[string]$format,$names,$quality) {
     # ya existe, se elegiria equivocadamente otra carpeta distinta.
     $dir = Get-OutputDir $format $quality
     $folderName = Split-Path -Path $dir -Leaf
-    foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($script:WorkDir)) {
+    $root = Get-ResultsRoot
+    foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($root)) {
         if ([StringComparer]::OrdinalIgnoreCase.Equals(
             [IO.Path]::GetFileName($path),$folderName)) {
             throw ('La carpeta de salida fue ocupada por otro proceso: '+$dir)
@@ -654,17 +773,18 @@ function Ask-PositiveInteger([string]$prompt) {
     }
 }
 function Get-ToolOutputDir([string]$label) {
+    $root=Get-ResultsRoot
     $leaf=Split-Path -Path $script:WorkDir -Leaf
     if ([string]::IsNullOrWhiteSpace($leaf)) { $leaf='Imagenes' }
     $base=$leaf+' - '+$label
     $used=[System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($script:WorkDir)) {
+    foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($root)) {
         [void]$used.Add([IO.Path]::GetFileName($path))
     }
-    if (-not $used.Contains($base)) { return (Join-Path $script:WorkDir $base) }
+    if (-not $used.Contains($base)) { return (Join-Path $root $base) }
     for ($i=2;$i -le 1000000;$i++) {
         $name=$base+' ('+$i+')'
-        if (-not $used.Contains($name)) { return (Join-Path $script:WorkDir $name) }
+        if (-not $used.Contains($name)) { return (Join-Path $root $name) }
     }
     throw 'No hay un nombre de carpeta disponible.'
 }
@@ -1097,6 +1217,9 @@ function Main {
     while ($true) {
         $script:HasMagick = ($null -ne (Get-Command magick.exe -ErrorAction SilentlyContinue))
         Header 'ImgMaster'
+        Write-Host ('CARPETA DE IMAGENES: '+$script:WorkDir)
+        Write-Host ('RESULTADOS: '+(Get-ResultsRoot))
+        Write-Host ''
         if ($script:HasMagick) {
             Write-Host ('{0,-23}{1}' -f 'CONVERSION','HERRAMIENTAS') -ForegroundColor Yellow
             Write-Host ('{0,-23}{1}' -f '1. TODO A PNG','6. RENOMBRAR')
@@ -1105,7 +1228,12 @@ function Main {
             Write-Host ('{0,-23}{1}' -f '4. TODO A AVIF','9. DETECTAR DUPLICADOS')
             Write-Host ('{0,-23}{1}' -f '5. TODO A BMP','10. GIRAR IMAGENES')
             Write-Host ''
-            $v=Ask 'Seleccione una opcion' @('1','2','3','4','5','6','7','8','9','10')
+            Write-Host '11. SELECCIONAR CARPETA'
+            if ($script:ExternalFolderSelected) { Write-Host '12. RESTABLECER CARPETA ORIGINAL' }
+            Write-Host ''
+            $choices=@('1','2','3','4','5','6','7','8','9','10','11')
+            if ($script:ExternalFolderSelected) { $choices+= '12' }
+            $v=Ask 'Seleccione una opcion' $choices
             switch ($v) {
                 '1' { Convert-Menu 'png' }
                 '2' { Convert-Menu 'jpg' }
@@ -1117,6 +1245,8 @@ function Main {
                 '8' { Compress-Menu }
                 '9' { Duplicates-Menu }
                 '10' { Rotate-Menu }
+                '11' { Select-ImagesFolder }
+                '12' { Restore-InitialFolder }
             }
         } else {
             Write-Host 'Para convertir imagenes se necesita ImageMagick.'
@@ -1124,14 +1254,20 @@ function Main {
             Write-Host '1. Instalar ImageMagick'
             Write-Host '2. Renombrar imagenes'
             Write-Host '3. Detectar duplicados'
+            Write-Host '11. Seleccionar carpeta'
+            if ($script:ExternalFolderSelected) { Write-Host '12. Restablecer carpeta original' }
             Write-Host ''
             Write-Host 'Redimensionar, comprimir y girar requieren ImageMagick.' -ForegroundColor Yellow
             Write-Host ''
-            $v=Ask 'Seleccione una opcion' @('1','2','3')
+            $choices=@('1','2','3','11')
+            if ($script:ExternalFolderSelected) { $choices+= '12' }
+            $v=Ask 'Seleccione una opcion' $choices
             switch ($v) {
                 '1' { Install-Magick }
                 '2' { Rename-Only }
                 '3' { Duplicates-Menu }
+                '11' { Select-ImagesFolder }
+                '12' { Restore-InitialFolder }
             }
         }
     }
