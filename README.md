@@ -28,7 +28,7 @@ Numera las imágenes directamente en su carpeta, sin cambiar su formato ni su co
 
 **7. REDIMENSIONAR**
 
-Reduce el ancho, el alto o ambas dimensiones de las imágenes. Mantiene las proporciones, no amplía las imágenes pequeñas y guarda los resultados en una carpeta nueva.
+Permite **reducir o ampliar** imágenes indicando el alto, el ancho o ambas dimensiones. Conserva las proporciones para evitar deformaciones y guarda los resultados en una carpeta nueva. La reducción omite las imágenes que no superan los límites elegidos, mientras que la ampliación omite las que ya alcanzan o superan las dimensiones indicadas. **Ampliar una imagen no recupera detalles que no existan en el original.**
 
 **8. COMPRIMIR**
 

@@ -841,20 +841,28 @@ function Process-ToolBatch([string]$action,$settings) {
             $geometry=''
             if ($action -eq 'REDIMENSIONAR IMAGENES') {
                 $dimensions=Get-Image-Dimensions $f.FullName $true
+                $enlarge=($settings.ResizeAction -eq 'ampliar')
+                $modifier=if ($enlarge) { '<' } else { '>' }
                 if ($settings.Mode -eq 'alto') {
-                    $geometry='x'+$settings.Height+'>'
-                    $tooBig=($dimensions.H -gt $settings.Height)
+                    $geometry='x'+$settings.Height+$modifier
+                    $shouldResize=if ($enlarge) { $dimensions.H -lt $settings.Height } else { $dimensions.H -gt $settings.Height }
                 } elseif ($settings.Mode -eq 'ancho') {
-                    $geometry=[string]$settings.Width+'x>'
-                    $tooBig=($dimensions.W -gt $settings.Width)
+                    $geometry=[string]$settings.Width+'x'+$modifier
+                    $shouldResize=if ($enlarge) { $dimensions.W -lt $settings.Width } else { $dimensions.W -gt $settings.Width }
                 } else {
-                    $geometry=([string]$settings.Width+'x'+$settings.Height+'>')
-                    $tooBig=($dimensions.W -gt $settings.Width -or $dimensions.H -gt $settings.Height)
+                    $geometry=[string]$settings.Width+'x'+$settings.Height+$modifier
+                    if ($enlarge) {
+                        # Ampliar proporcionalmente hasta el limite que se alcance primero.
+                        $shouldResize=([math]::Min($settings.Width / [double]$dimensions.W,
+                            $settings.Height / [double]$dimensions.H) -gt 1.0)
+                    } else {
+                        $shouldResize=($dimensions.W -gt $settings.Width -or $dimensions.H -gt $settings.Height)
+                    }
                 }
-                # No crear copias sin cambio de resolucion, incluso en modo TODAS.
-                if (-not $tooBig) {
+                if (-not $shouldResize) {
                     $skipped++
-                    Write-Host ('SIN CAMBIOS: '+$f.Name+' (no supera la resolucion elegida)')
+                    $reason=if ($enlarge) { 'ya alcanza o supera la resolucion elegida' } else { 'no supera la resolucion elegida' }
+                    Write-Host ('SIN CAMBIOS: '+$f.Name+' ('+$reason+')')
                     continue
                 }
             } elseif ($action -eq 'GIRAR IMAGENES') {
@@ -879,9 +887,10 @@ function Process-ToolBatch([string]$action,$settings) {
             if ($null -eq $dir) {
                 $label=switch ($action) {
                     'REDIMENSIONAR IMAGENES' {
-                        if ($settings.Mode -eq 'alto') { 'REDIMENSIONADAS - ALTO '+$settings.Height+'px' }
-                        elseif ($settings.Mode -eq 'ancho') { 'REDIMENSIONADAS - ANCHO '+$settings.Width+'px' }
-                        else { 'REDIMENSIONADAS - '+$settings.Width+'x'+$settings.Height+'px' }
+                        $prefix=if ($settings.ResizeAction -eq 'ampliar') { 'AMPLIADAS' } else { 'REDIMENSIONADAS' }
+                        if ($settings.Mode -eq 'alto') { $prefix+' - ALTO '+$settings.Height+'px' }
+                        elseif ($settings.Mode -eq 'ancho') { $prefix+' - ANCHO '+$settings.Width+'px' }
+                        else { $prefix+' - '+$settings.Width+'x'+$settings.Height+'px' }
                     }
                     'COMPRIMIR IMAGENES' { 'COMPRIMIDAS - CALIDAD '+$settings.Quality+'%' }
                     'GIRAR IMAGENES' { if ($settings.Target -eq 'invertir') { 'GIRADAS - INVERTIDAS' } else { 'GIRADAS - '+$settings.Target.ToUpperInvariant() } }
@@ -905,9 +914,7 @@ function Process-ToolBatch([string]$action,$settings) {
                 [void]$argsList.Add('-auto-orient')
                 [void]$argsList.Add('-resize')
                 [void]$argsList.Add($geometry)
-                # Evita ampliar imagenes pequenas y perder nitidez.
-                # En modo solo-superiores se omiten arriba, aqui tampoco se amplian.
-                # El modificador > de ImageMagick impide la ampliacion.
+                # > reduce solamente; < amplia solamente, conservando proporciones.
             } elseif ($action -eq 'GIRAR IMAGENES') {
                 [void]$argsList.Add('-auto-orient')
                 [void]$argsList.Add('-rotate')
@@ -983,6 +990,14 @@ function Process-ToolBatch([string]$action,$settings) {
 }
 function Resize-Menu {
     Header 'REDIMENSIONAR IMAGENES'
+    Write-Host '1. Reducir imagenes'
+    Write-Host '2. Ampliar imagenes'
+    Write-Host '3. Volver'
+    Write-Host ''
+    $resizeChoice=Ask 'Seleccione una opcion' @('1','2','3')
+    if ($resizeChoice -eq '3') { return }
+    $resizeAction=if ($resizeChoice -eq '2') { 'ampliar' } else { 'reducir' }
+    Header $(if ($resizeAction -eq 'ampliar') { 'AMPLIAR IMAGENES' } else { 'REDUCIR IMAGENES' })
     Write-Host '1. Alto (ancho automatico)'
     Write-Host '2. Ancho (alto automatico)'
     Write-Host '3. Personalizar alto y ancho'
@@ -990,7 +1005,7 @@ function Resize-Menu {
     Write-Host ''
     $v=Ask 'Seleccione una opcion' @('1','2','3','4')
     if ($v -eq '4') { return }
-    $settings=[pscustomobject]@{Mode='';Width=0;Height=0;OnlyLarger=$false}
+    $settings=[pscustomobject]@{Mode='';Width=0;Height=0;OnlyLarger=$false;ResizeAction=$resizeAction}
     if ($v -eq '1') {
         $settings.Mode='alto'
         $settings.Height=Ask-PositiveInteger 'Coloque la resolucion de alto'
@@ -1007,14 +1022,19 @@ function Resize-Menu {
         if ($settings.Width -eq 0) { return }
         Write-Host 'Se conservaran las proporciones; ambas medidas son limites maximos.' -ForegroundColor Yellow
     }
-    Header 'APLICAR REDIMENSION'
-    Write-Host '1. Todas las imagenes'
-    Write-Host '2. Solo imagenes que superen la resolucion elegida'
-    Write-Host '3. Volver'
-    Write-Host ''
-    $scope=Ask 'Seleccione una opcion' @('1','2','3')
-    if ($scope -eq '3') { return }
-    $settings.OnlyLarger=($scope -eq '2')
+    if ($resizeAction -eq 'reducir') {
+        Header 'APLICAR REDIMENSION'
+        Write-Host '1. Todas las imagenes'
+        Write-Host '2. Solo imagenes que superen la resolucion elegida'
+        Write-Host '3. Volver'
+        Write-Host ''
+        $scope=Ask 'Seleccione una opcion' @('1','2','3')
+        if ($scope -eq '3') { return }
+        $settings.OnlyLarger=($scope -eq '2')
+    } else {
+        Write-Host 'Solo se ampliaran las imagenes que no alcancen las dimensiones elegidas.' -ForegroundColor Yellow
+        Write-Host 'La ampliacion no recupera detalles que no existan en la imagen original.' -ForegroundColor Yellow
+    }
     Process-ToolBatch 'REDIMENSIONAR IMAGENES' $settings
 }
 function Compress-Menu {
