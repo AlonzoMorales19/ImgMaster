@@ -1099,7 +1099,7 @@ function Main {
         Header 'ImgMaster'
         if ($script:HasMagick) {
             Write-Host ('{0,-23}{1}' -f 'CONVERSION','HERRAMIENTAS') -ForegroundColor Yellow
-            Write-Host ('{0,-23}{1}' -f '1. TODO A PNG','6. SOLO RENOMBRAR')
+            Write-Host ('{0,-23}{1}' -f '1. TODO A PNG','6. RENOMBRAR')
             Write-Host ('{0,-23}{1}' -f '2. TODO A JPG','7. REDIMENSIONAR')
             Write-Host ('{0,-23}{1}' -f '3. TODO A WEBP','8. COMPRIMIR')
             Write-Host ('{0,-23}{1}' -f '4. TODO A AVIF','9. DETECTAR DUPLICADOS')
@@ -1122,7 +1122,7 @@ function Main {
             Write-Host 'Para convertir imagenes se necesita ImageMagick.'
             Write-Host ''
             Write-Host '1. Instalar ImageMagick'
-            Write-Host '2. Solo renombrar imagenes'
+            Write-Host '2. Renombrar imagenes'
             Write-Host '3. Detectar duplicados'
             Write-Host ''
             Write-Host 'Redimensionar, comprimir y girar requieren ImageMagick.' -ForegroundColor Yellow
